@@ -1,0 +1,32 @@
+# Environment and sensitive keys
+.env
+*.env
+
+# SQLite Databases & Backups
+data/*.db
+*.db
+*.db-journal
+
+# Uploads & local persistent media
+data/uploads/*
+!data/uploads/.gitkeep
+
+# ML Models & Pickles
+data/models/*.joblib
+*.joblib
+*.pkl
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Virtualenv
+venv/
+.venv/
