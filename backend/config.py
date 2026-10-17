@@ -22,7 +22,7 @@ EXTRACTED_CERTS_DIR.mkdir(exist_ok=True)
 
 # Secure secret key resolution
 INSECURE_PUBLIC_KEYS = {
-    "agritrace_production_secret_key_secure_2026",
+    "insecure_default_secret_key_do_not_use",
     "replace_with_your_own_secure_random_key_min_32_chars",
     "secret",
     "changeme"
@@ -55,6 +55,8 @@ class Settings(BaseModel):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     CORS_ORIGINS: List[str] = _cors_list
+    UPLOADS_DIR: Path = UPLOADS_DIR
+    DATA_DIR: Path = DATA_DIR
 
     # FalkorDB settings
     FALKORDB_HOST: str = os.getenv("FALKORDB_HOST", "localhost")

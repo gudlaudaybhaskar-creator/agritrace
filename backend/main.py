@@ -69,7 +69,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     clean_message = " | ".join(errors) if errors else "Validation failed"
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": clean_message, "errors": exc.errors()}
+        content={"detail": clean_message}
     )
 
 # Include API Routers under /api
@@ -82,6 +82,11 @@ app.include_router(datasets_routes.router, prefix=settings.API_V1_STR)
 app.include_router(sync_routes.router, prefix=settings.API_V1_STR)
 app.include_router(diagnostics.router, prefix=settings.API_V1_STR)
 app.include_router(meta_routes.router, prefix=settings.API_V1_STR)
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok", "app": settings.PROJECT_NAME, "version": settings.VERSION}
+
 
 # Serve Frontend Static Assets
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"

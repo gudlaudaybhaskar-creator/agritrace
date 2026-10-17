@@ -119,6 +119,7 @@ class AIProvider:
                     dataset_matches=dataset_matches,
                     ml_predictions=ml_predictions
                 )
+                res["provider_mode"] = "Rule-based guidance (Gemini fallback)"
                 res["fallback_reason"] = "Live AI service temporarily unavailable; rule-based guidance generated."
                 return res
         else:

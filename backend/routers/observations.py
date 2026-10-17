@@ -89,6 +89,11 @@ class ObservationCreate(BaseModel):
 
     @field_validator("data")
     def validate_measurements(cls, d: Dict[str, Any]) -> Dict[str, Any]:
+        # Reject reserved keys to prevent cross-user injection
+        for reserved in ["id", "farmer_id"]:
+            if reserved in d:
+                raise ValueError(f"Reserved key '{reserved}' is not permitted in measurement data")
+
         # Validate soil moisture (0 - 100%)
         for k in ["soil_moisture", "moisture"]:
             if k in d and d[k] is not None:

@@ -189,6 +189,21 @@ def create_farm(
 
     return response_payload
 
+@router.get("/{farm_id}")
+def get_farm(farm_id: str, farmer: Dict[str, Any] = Depends(get_current_farmer)):
+    conn = get_db_connection()
+    farm = conn.execute("SELECT * FROM farms WHERE id = ? AND farmer_id = ?", (farm_id, farmer["id"])).fetchone()
+    conn.close()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or access denied")
+    f = dict(farm)
+    if isinstance(f.get("irrigation_methods"), str):
+        try:
+            f["irrigation_methods"] = json.loads(f["irrigation_methods"])
+        except Exception:
+            f["irrigation_methods"] = []
+    return {"farm": f}
+
 @router.get("/{farm_id}/fields")
 def list_fields(farm_id: str, farmer: Dict[str, Any] = Depends(get_current_farmer)):
     conn = get_db_connection()
@@ -277,9 +292,11 @@ def list_crop_cycles(field_id: str, farmer: Dict[str, Any] = Depends(get_current
     return {"crop_cycles": cycles}
 
 @router.post("/fields/{field_id}/crop-cycles")
+@router.post("/{farm_id}/fields/{field_id}/crop-cycles")
 def add_crop_cycle(
     field_id: str,
     req: CropCycleCreate,
+    farm_id: Optional[str] = None,
     farmer: Dict[str, Any] = Depends(get_current_farmer),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
 ):

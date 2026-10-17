@@ -228,9 +228,13 @@ class InvestigationEngine:
                     (obs_id, farmer_id, farm_info.get("id"), resolved_field_id, resolved_cycle_id, now_iso, "investigation_input", "current_measurement", json.dumps(new_measurements), now_iso, now_iso)
                 )
 
-            finding_data = analysis_result.get("finding", {})
+            finding_data = dict(analysis_result.get("finding", {}))
             summary = analysis_result.get("summary", "Investigation concluded")
             reasoning = analysis_result.get("detailed_reasoning", "")
+            finding_data["detailed_reasoning"] = reasoning
+            finding_data["provider_mode"] = analysis_result.get("provider_mode")
+            finding_data["fallback_reason"] = analysis_result.get("fallback_reason")
+            finding_data["disclaimer"] = analysis_result.get("disclaimer")
             rec_actions = json.dumps(finding_data.get("recommended_actions", []))
             uncertainties = json.dumps(finding_data.get("uncertainties", []))
             evidence_str = finding_data.get("evidence_strength", "Moderate")
