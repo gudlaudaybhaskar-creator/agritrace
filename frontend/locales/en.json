@@ -1,0 +1,17 @@
+{
+  "app_name": "AgriTrace",
+  "app_tagline": "Farm Guidance & Records",
+  "nav_home": "Home",
+  "nav_ask": "Ask",
+  "nav_my_farm": "My Farm",
+  "nav_results": "Results",
+  "nav_about": "About the Data",
+  "nav_logout": "Log Out",
+  "status_ai_rule": "AI: rule-based (offline)",
+  "status_backup_local": "Backup: this server only",
+  "status_graph_builtin": "Graph: built-in",
+  "disclaimer_banner": "This is advice, not a lab result. Check with your local KVK or the Kisan helpline (1800-180-1551) before spraying or buying inputs.",
+  "btn_save_farm": "Save my farm",
+  "btn_ask_problem": "Ask about a problem",
+  "empty_investigation": "No investigation open. Start one, or open one from History."
+}

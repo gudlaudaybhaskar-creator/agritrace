@@ -1,26 +1,29 @@
 """
 AgriTrace Investigation Orchestrator
-Conducts graph-native agricultural investigations:
-1. Resolves farmer, farm, field, and crop cycle context.
-2. Traverses knowledge graph to recall historical observations and past findings.
-3. Computes time-series observation deltas (e.g. soil moisture drops).
-4. Matches relevant scientific dataset benchmarks.
-5. Evaluates hypotheses via AI Provider (Gemini or Deterministic Agricultural Rules).
-6. Links supporting evidence (photos, soil test certificates).
-7. Generates transparent, auditable execution trace with exact queries and timings.
-8. Persists findings and updates knowledge graph memory.
+Conducts agricultural investigations:
+1. Resolves farmer, farm, field, and crop cycle context (strictly raises 404 for missing fields, 422 for missing crop cycle).
+2. Recalls earlier historical measurements from the persistent database.
+3. Only calls ML models when all necessary measurements were actually taken.
+4. Evaluates hypotheses via AI Provider (Gemini or Rule-based guidance).
+5. Executes the entire pipeline in ONE single database transaction so failures never leave orphan observations.
+6. Records real execution traces without fabricated Cypher queries.
+7. Updates the knowledge graph with investigation, finding, and hypothesis nodes.
 """
 
 import json
 import time
 import uuid
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from fastapi import HTTPException, status
 
 from backend.database.db import get_db_connection
 from backend.graph.graph_manager import graph_manager
 from backend.datasets.dataset_manager import dataset_manager
 from backend.investigation.ai_provider import ai_provider
+
+logger = logging.getLogger("agritrace.engine")
 
 class InvestigationEngine:
     def execute_investigation(
@@ -30,7 +33,8 @@ class InvestigationEngine:
         field_id: Optional[str] = None,
         crop_cycle_id: Optional[str] = None,
         new_measurements: Optional[Dict[str, Any]] = None,
-        evidence_files: Optional[List[Dict[str, Any]]] = None
+        evidence_files: Optional[List[Dict[str, Any]]] = None,
+        idempotency_key: Optional[str] = None
     ) -> Dict[str, Any]:
         start_time = time.time()
         trace_steps = []
@@ -46,7 +50,7 @@ class InvestigationEngine:
                 "timestamp_ms": elapsed_ms
             })
 
-        log_trace("INPUT_RECEIVED", f"Investigation started with user query: '{user_query}'")
+        log_trace("INPUT_RECEIVED", f"Investigation started: '{user_query[:80]}'")
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -55,152 +59,137 @@ class InvestigationEngine:
             # Step 1: Identify Authenticated Farmer
             farmer_row = cursor.execute("SELECT * FROM farmers WHERE id = ?", (farmer_id,)).fetchone()
             if not farmer_row:
-                raise ValueError(f"Farmer with ID {farmer_id} not found")
+                raise HTTPException(status_code=404, detail="Farmer not found")
             farmer_profile = dict(farmer_row)
             farmer_profile.pop("password_hash", None)
             log_trace("FARMER_IDENTIFIED", f"Loaded profile for farmer {farmer_profile.get('display_name')}", record_ids=[farmer_id], count=1)
 
-            # Step 2: Resolve Farm, Field and Crop Cycle
-            farm_row = None
+            # Step 2: Resolve Farm, Field, and Crop Cycle
             field_row = None
-            crop_cycle_row = None
-
             if field_id:
                 field_row = cursor.execute("SELECT * FROM fields WHERE id = ? AND farmer_id = ?", (field_id, farmer_id)).fetchone()
-            elif crop_cycle_id:
-                crop_cycle_row = cursor.execute("SELECT * FROM crop_cycles WHERE id = ? AND farmer_id = ?", (crop_cycle_id, farmer_id)).fetchone()
-                if crop_cycle_row:
-                    field_row = cursor.execute("SELECT * FROM fields WHERE id = ?", (crop_cycle_row["field_id"],)).fetchone()
-
-            if not field_row:
-                # Default to first available field for this farmer
+                if not field_row:
+                    raise HTTPException(status_code=404, detail=f"Field '{field_id}' not found for this farmer")
+            else:
                 field_row = cursor.execute("SELECT * FROM fields WHERE farmer_id = ? ORDER BY created_at DESC LIMIT 1", (farmer_id,)).fetchone()
-
-            if not field_row:
-                raise ValueError("No field registered for this farmer. Please register a field first.")
+                if not field_row:
+                    raise HTTPException(status_code=422, detail="No field registered. Please add a field to your farm before starting an investigation.")
 
             field_info = dict(field_row)
             farm_row = cursor.execute("SELECT * FROM farms WHERE id = ?", (field_info["farm_id"],)).fetchone()
             farm_info = dict(farm_row) if farm_row else {}
 
-            if not crop_cycle_row:
+            # Crop cycle resolution: DO NOT invent a fake crop cycle!
+            crop_cycle_row = None
+            if crop_cycle_id:
+                crop_cycle_row = cursor.execute(
+                    "SELECT * FROM crop_cycles WHERE id = ? AND field_id = ? AND farmer_id = ?",
+                    (crop_cycle_id, field_info["id"], farmer_id)
+                ).fetchone()
+                if not crop_cycle_row:
+                    raise HTTPException(status_code=404, detail=f"Crop cycle '{crop_cycle_id}' not found for this field")
+            else:
                 crop_cycle_row = cursor.execute(
                     "SELECT * FROM crop_cycles WHERE field_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
                     (field_info["id"],)
                 ).fetchone()
 
             if not crop_cycle_row:
-                # Fallback to any latest crop cycle on that field
-                crop_cycle_row = cursor.execute(
-                    "SELECT * FROM crop_cycles WHERE field_id = ? ORDER BY created_at DESC LIMIT 1",
-                    (field_info["id"],)
-                ).fetchone()
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"No crop cycle found for field '{field_info.get('name')}'. Please register a crop cycle first."
+                )
 
-            crop_cycle_info = dict(crop_cycle_row) if crop_cycle_row else {
-                "id": f"default_cycle_{field_info['id'][:8]}",
-                "crop_name": "Mixed Crop",
-                "growth_stage": "Vegetative"
-            }
-
+            crop_cycle_info = dict(crop_cycle_row)
             resolved_field_id = field_info["id"]
             resolved_cycle_id = crop_cycle_info["id"]
 
             log_trace(
                 "CONTEXT_RESOLVED",
-                f"Resolved context to Farm '{farm_info.get('name')}', Field '{field_info.get('name')}', Crop '{crop_cycle_info.get('crop_name')}'",
+                f"Resolved context: Farm '{farm_info.get('name')}', Field '{field_info.get('name')}', Crop '{crop_cycle_info.get('crop_name')}'",
                 record_ids=[farm_info.get("id"), resolved_field_id, resolved_cycle_id],
                 count=3
             )
 
-            # Step 3: Record New Observation if provided
-            current_observations = []
-            if new_measurements:
-                obs_id = str(uuid.uuid4())
-                obs_data = json.dumps(new_measurements)
-                now_str = datetime.now(timezone.utc).isoformat()
-                cursor.execute(
-                    """
-                    INSERT INTO observations (id, farmer_id, farm_id, field_id, crop_cycle_id, observed_at, source, observation_type, data, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (obs_id, farmer_id, farm_info.get("id"), resolved_field_id, resolved_cycle_id, now_str, "investigation_input", "current_measurement", obs_data, now_str)
-                )
-                conn.commit()
-
-                # Add to graph
-                graph_manager.create_or_update_node("Observation", {
-                    "id": obs_id,
-                    "crop_cycle_id": resolved_cycle_id,
-                    "field_id": resolved_field_id,
-                    "observed_at": now_str,
-                    "source": "investigation_input",
-                    **new_measurements
-                })
-                graph_manager.create_relationship(resolved_cycle_id, "HAS_OBSERVATION", obs_id)
-
-                current_observations.append({
-                    "id": obs_id,
-                    "observed_at": now_str,
-                    "source": "investigation_input",
-                    "data": new_measurements
-                })
-                log_trace("NEW_OBSERVATION_RECORDED", "Saved current observation without overwriting historical measurements", record_ids=[obs_id], count=1)
-
-            # Step 4: Graph Multi-Hop Traversal to Retrieve Prior Memory
-            traversal_query = f"""
-            MATCH (f:Field {{id: '{resolved_field_id}'}})-[:HAS_CROP_CYCLE]->(c:CropCycle)-[:HAS_OBSERVATION]->(o:Observation)
-            RETURN o ORDER BY o.observed_at DESC LIMIT 10
-            """
+            # Step 3: Load earlier measurements from database
             hist_obs_rows = cursor.execute(
                 """
                 SELECT id, observed_at, source, observation_type, data
                 FROM observations
-                WHERE field_id = ? AND id NOT IN ({})
+                WHERE field_id = ?
                 ORDER BY observed_at DESC
                 LIMIT 10
-                """.format("'" + current_observations[0]["id"] + "'" if current_observations else "''"),
+                """,
                 (resolved_field_id,)
             ).fetchall()
 
             historical_observations = []
             for r in hist_obs_rows:
+                d_val = r["data"]
+                if isinstance(d_val, str):
+                    try:
+                        d_val = json.loads(d_val)
+                    except Exception:
+                        pass
                 historical_observations.append({
                     "id": r["id"],
                     "observed_at": r["observed_at"],
                     "source": r["source"],
                     "type": r["observation_type"],
-                    "data": json.loads(r["data"]) if isinstance(r["data"], str) else r["data"]
+                    "data": d_val
                 })
 
             log_trace(
-                "GRAPH_TRAVERSAL_EXECUTED",
-                f"Traversed graph: Field({resolved_field_id}) -> CropCycle -> Observation. Retrieved {len(historical_observations)} historical measurements.",
-                query=traversal_query.strip(),
+                "HISTORICAL_READINGS_LOADED",
+                f"Loaded {len(historical_observations)} earlier readings from database for field '{field_info.get('name')}'.",
                 record_ids=[o["id"] for o in historical_observations],
                 count=len(historical_observations)
             )
 
-            # Step 5: Search Scientific Benchmark Datasets
+            # Step 4: Search benchmark reference statistics
             crop_name = crop_cycle_info.get("crop_name", "")
             soil_type = field_info.get("soil_type", "")
-            matched_dataset_records = dataset_manager.search_benchmark_records(crop=crop_name, soil_type=soil_type, limit=3)
+            benchmark_matches = dataset_manager.search_benchmark_records(crop=crop_name, soil_type=soil_type, limit=3)
             log_trace(
-                "DATASET_BENCHMARKS_RETRIEVED",
-                f"Queried sensor & benchmark records for crop '{crop_name}' and soil '{soil_type}'.",
-                count=len(matched_dataset_records)
+                "BENCHMARKS_RETRIEVED",
+                f"Matched {benchmark_matches.get('matched_count', 0)} benchmark reference records for crop '{crop_name}'.",
+                count=benchmark_matches.get("matched_count", 0)
             )
 
-            # Step 6: ML Diagnostic Signals
+            # Step 5: Check ML predictions only if ALL 8 features are actually present
             ml_signals = {}
-            if new_measurements and "soil_moisture" in new_measurements:
-                sm = float(new_measurements.get("soil_moisture", 25))
-                n = float(new_measurements.get("N", 60))
-                p = float(new_measurements.get("P", 40))
-                k = float(new_measurements.get("K", 40))
-                crop_rec = dataset_manager.predict_crop(n, p, k, 28.0, 65.0, 6.5, 120.0, sm)
-                ml_signals["crop_suitability"] = crop_rec
+            if new_measurements:
+                req_keys = ['N', 'P', 'K', 'temperature', 'humidity', 'ph', 'rainfall', 'soil_moisture']
+                has_all_features = all(k in new_measurements and new_measurements[k] is not None for k in req_keys)
+                if has_all_features:
+                    crop_rec = dataset_manager.predict_crop(
+                        float(new_measurements['N']),
+                        float(new_measurements['P']),
+                        float(new_measurements['K']),
+                        float(new_measurements['temperature']),
+                        float(new_measurements['humidity']),
+                        float(new_measurements['ph']),
+                        float(new_measurements['rainfall']),
+                        float(new_measurements['soil_moisture'])
+                    )
+                    ml_signals["predicted_crop"] = crop_rec.get("recommended_crop")
+                else:
+                    ml_signals["note"] = "Skipped ML prediction: not enough measurements."
 
-            # Step 7: Reasoning & Hypothesis Evaluation via AI Provider
+            # Step 6: Reasoning & Hypothesis Evaluation
+            current_obs_list = []
+            obs_id = None
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if new_measurements:
+                obs_id = str(uuid.uuid4())
+                current_obs_list.append({
+                    "id": obs_id,
+                    "observed_at": now_iso,
+                    "source": "investigation_input",
+                    "data": new_measurements
+                })
+
             graph_context = {
                 "field_id": resolved_field_id,
                 "crop_cycle_id": resolved_cycle_id,
@@ -212,10 +201,10 @@ class InvestigationEngine:
                 field_info=field_info,
                 crop_cycle=crop_cycle_info,
                 user_problem=user_query,
-                current_observations=current_observations,
+                current_observations=current_obs_list,
                 historical_observations=historical_observations,
                 graph_context=graph_context,
-                dataset_matches=matched_dataset_records,
+                dataset_matches=benchmark_matches,
                 ml_predictions=ml_signals
             )
 
@@ -225,49 +214,62 @@ class InvestigationEngine:
                 count=len(analysis_result.get("hypotheses", []))
             )
 
-            # Step 8: Persist Investigation and Findings
+            # Step 7: Single Database Transaction
+            # Everything (observation, investigation, findings, hypotheses) committed together!
             inv_id = str(uuid.uuid4())
             finding_id = str(uuid.uuid4())
-            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if new_measurements and obs_id:
+                cursor.execute(
+                    """
+                    INSERT INTO observations (id, farmer_id, farm_id, field_id, crop_cycle_id, observed_at, source, observation_type, data, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (obs_id, farmer_id, farm_info.get("id"), resolved_field_id, resolved_cycle_id, now_iso, "investigation_input", "current_measurement", json.dumps(new_measurements), now_iso, now_iso)
+                )
 
             finding_data = analysis_result.get("finding", {})
             summary = analysis_result.get("summary", "Investigation concluded")
             reasoning = analysis_result.get("detailed_reasoning", "")
             rec_actions = json.dumps(finding_data.get("recommended_actions", []))
             uncertainties = json.dumps(finding_data.get("uncertainties", []))
-            conf = float(finding_data.get("confidence_score", 0.75))
+            evidence_str = finding_data.get("evidence_strength", "Moderate")
 
-            # Save to relational DB
             cursor.execute(
                 """
-                INSERT INTO investigations (id, farmer_id, crop_cycle_id, field_id, farm_id, title, user_query, status, execution_trace, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investigations (id, farmer_id, crop_cycle_id, field_id, farm_id, title, user_query, status, execution_trace, idempotency_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (inv_id, farmer_id, resolved_cycle_id, resolved_field_id, farm_info.get("id"), f"Investigation: {crop_name} - {user_query[:40]}", user_query, "resolved", json.dumps(trace_steps), now_iso, now_iso)
+                (inv_id, farmer_id, resolved_cycle_id, resolved_field_id, farm_info.get("id"), f"Problem: {user_query[:40]}", user_query, "resolved", json.dumps(trace_steps), idempotency_key, now_iso, now_iso)
             )
 
             cursor.execute(
                 """
-                INSERT INTO findings (id, investigation_id, summary, detailed_reasoning, recommended_actions, uncertainties, confidence_score, supporting_evidence_ids, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO findings (id, investigation_id, summary, detailed_reasoning, recommended_actions, uncertainties, confidence_score, evidence_strength, supporting_evidence_ids, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
-                (finding_id, inv_id, summary, reasoning, rec_actions, uncertainties, conf, json.dumps([]), now_iso)
+                (finding_id, inv_id, summary, reasoning, rec_actions, uncertainties, evidence_str, json.dumps([]), now_iso, now_iso)
             )
 
-            # Save hypotheses
+            hypotheses_records = []
             for h in analysis_result.get("hypotheses", []):
                 h_id = str(uuid.uuid4())
                 cursor.execute(
                     """
-                    INSERT INTO hypotheses (id, investigation_id, title, description, confidence, status, supporting_evidence_ids, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hypotheses (id, investigation_id, title, description, confidence, evidence_strength, status, supporting_evidence_ids, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                     """,
-                    (h_id, inv_id, h.get("title", "Hypothesis"), h.get("description", ""), float(h.get("confidence", 0.5)), h.get("status", "under_investigation"), json.dumps(h.get("supporting_evidence", [])), now_iso)
+                    (h_id, inv_id, h.get("title", "Hypothesis"), h.get("description", ""), h.get("evidence_strength", "Moderate"), h.get("status", "under_investigation"), json.dumps(h.get("supporting_evidence", [])), now_iso, now_iso)
                 )
+                hypotheses_records.append({**h, "id": h_id})
 
+            log_trace("INVESTIGATION_COMPLETED", "Investigation and findings recorded safely.", record_ids=[inv_id, finding_id], count=2)
+            cursor.execute("UPDATE investigations SET execution_trace = ? WHERE id = ?", (json.dumps(trace_steps), inv_id))
+
+            # Commit the atomic transaction
             conn.commit()
 
-            # Step 9: Update Graph Knowledge Memory
+            # Step 8: Update Graph Nodes
             graph_manager.create_or_update_node("Investigation", {
                 "id": inv_id,
                 "farmer_id": farmer_id,
@@ -283,19 +285,33 @@ class InvestigationEngine:
                 "id": finding_id,
                 "investigation_id": inv_id,
                 "summary": summary,
-                "confidence_score": conf,
+                "evidence_strength": evidence_str,
                 "created_at": now_iso
             })
             graph_manager.create_relationship(inv_id, "PRODUCED", finding_id)
 
-            if current_observations:
-                graph_manager.create_relationship(inv_id, "CONTAINS_OBSERVATION", current_observations[0]["id"])
+            for h in hypotheses_records:
+                graph_manager.create_or_update_node("Hypothesis", {
+                    "id": h["id"],
+                    "investigation_id": inv_id,
+                    "title": h["title"],
+                    "status": h["status"],
+                    "evidence_strength": h.get("evidence_strength", "Moderate")
+                })
+                graph_manager.create_relationship(inv_id, "CONSIDERED", h["id"])
 
-            log_trace("INVESTIGATION_COMPLETED", f"Investigation {inv_id} saved and persistent graph memory updated.", record_ids=[inv_id, finding_id], count=2)
-
-            # Finalize trace in DB
-            cursor.execute("UPDATE investigations SET execution_trace = ? WHERE id = ?", (json.dumps(trace_steps), inv_id))
-            conn.commit()
+            if obs_id:
+                graph_manager.create_or_update_node("Observation", {
+                    "id": obs_id,
+                    "farmer_id": farmer_id,
+                    "field_id": resolved_field_id,
+                    "crop_cycle_id": resolved_cycle_id,
+                    "observed_at": now_iso,
+                    "source": "investigation_input",
+                    "type": "current_measurement",
+                    "data": json.dumps(new_measurements)
+                })
+                graph_manager.create_relationship(inv_id, "CONTAINS_OBSERVATION", obs_id)
 
             return {
                 "investigation_id": inv_id,
@@ -304,15 +320,16 @@ class InvestigationEngine:
                 "crop_cycle": crop_cycle_info,
                 "summary": summary,
                 "detailed_reasoning": reasoning,
-                "hypotheses": analysis_result.get("hypotheses", []),
+                "hypotheses": hypotheses_records,
                 "finding": finding_data,
                 "historical_observations_retrieved": len(historical_observations),
                 "historical_observations": historical_observations,
-                "dataset_benchmarks": matched_dataset_records,
+                "dataset_benchmarks": benchmark_matches,
                 "ml_signals": ml_signals,
                 "execution_trace": trace_steps,
                 "provider_mode": analysis_result.get("provider_mode"),
-                "status": "resolved"
+                "status": "resolved",
+                "disclaimer": analysis_result.get("disclaimer")
             }
 
         finally:

@@ -1,0 +1,48 @@
+# AgriTrace Agronomic Guidance Rules & Thresholds
+# All recommendations are provided as general decision-support guidance, not laboratory soil analysis.
+# Thresholds are parameterized and documented with citations and review dates.
+
+rules:
+  - id: moisture_deficit_acute
+    name: "Acute Soil Moisture Stress"
+    crop: "general"
+    threshold_moisture_critical: 20.0  # % volumetric soil moisture
+    source: "FAO Irrigation and Drainage Paper No. 56 (Crop Evapotranspiration - Guidelines for Computing Crop Water Requirements)"
+    last_reviewed: "2026-03-15"
+    review_status: "agronomic_reference_standard"
+    advice_template: "Current soil moisture ({current_moisture}%) is below the critical moisture threshold ({threshold}%). Schedule irrigation within 24 hours to prevent approaching permanent wilting point."
+
+  - id: moisture_decline_significant
+    name: "Significant Moisture Decline"
+    crop: "general"
+    threshold_drop_rate: 10.0  # % drop between consecutive observations
+    threshold_max_acceptable: 25.0
+    source: "ICRISAT Drought Adaptation Guidelines & Standard Agronomic Water Deficit Matrix"
+    last_reviewed: "2026-03-15"
+    review_status: "agronomic_reference_standard"
+    advice_template: "Observed moisture dropped by {drop_rate}% (from {previous_moisture}% to {current_moisture}%). Consider localized light irrigation."
+
+  - id: nitrogen_deficiency_chlorosis
+    name: "Nitrogen Deficiency Chlorosis"
+    crop: "general"
+    threshold_n_low_kgha: 100.0  # kg/ha available soil Nitrogen
+    source: "Government of India Soil Health Card Standard Nutrient Rating Scale (Low Available N: < 280 kg/ha; critical threshold < 100 kg/ha)"
+    last_reviewed: "2026-03-15"
+    review_status: "agronomic_reference_standard"
+    advice_template: "Available nitrogen ({measured_n} kg/ha) is in the critical deficiency range (< {threshold} kg/ha). Inter-veinal pale yellowing starting from older lower leaves correlates with nitrogen mobility. Consult local agricultural officer for balanced fertilizer recommendation."
+
+  - id: general_chlorosis_unconfirmed
+    name: "Nutrient Deficiency Chlorosis (Unconfirmed)"
+    crop: "general"
+    source: "General Plant Pathology Diagnostic Protocol (Visual Symptom Key)"
+    last_reviewed: "2026-03-15"
+    review_status: "field_symptom_triage"
+    advice_template: "Yellowing symptoms reported, but exact elemental shortage requires soil fertility testing. Collect composite soil sample for lab analysis."
+
+  - id: foliar_symptom_screening
+    name: "Foliar Pathogen / Pest Screening"
+    crop: "general"
+    source: "Standard Plant Protection Triage Guide"
+    last_reviewed: "2026-03-15"
+    review_status: "field_symptom_triage"
+    advice_template: "Foliar spots, lesions, or pest symptoms reported. Inspect underside of leaves in daylight. Avoid overhead irrigation to minimize leaf wetness duration."
