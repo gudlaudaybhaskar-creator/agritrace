@@ -39,6 +39,9 @@ def setup_test_db(tmp_path_factory):
     tmp_dir = tmp_path_factory.mktemp("agritrace_test_db")
     test_db = str(tmp_dir / "test_agritrace.db")
     settings.SQLITE_DB_PATH = test_db
+    os.environ["AI_PROVIDER"] = "rules"
+    settings.AI_PROVIDER = "rules"
+    ai_provider.provider_setting = "rules"
     init_db()
     graph_manager.embedded_service = EmbeddedGraphEngine(test_db)
     dataset_manager.initialize_and_profile()

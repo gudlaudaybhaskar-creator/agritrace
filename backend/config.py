@@ -75,7 +75,7 @@ class Settings(BaseModel):
 
     # AI settings (Gemini API from Google AI Studio)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     AI_PROVIDER: str = os.getenv("AI_PROVIDER", "auto")  # gemini or fallback
 
     # Dataset file paths
