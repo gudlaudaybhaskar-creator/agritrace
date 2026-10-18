@@ -1,3 +1,8 @@
+TO TEST FOLLOW THIS 
+https://agri-trace-4x5p.onrender.com/
+
+
+
 # AgriTrace — Agricultural Records & Evidence-Based Guidance
 
 AgriTrace is a transparent agricultural records and farm memory platform. It maintains a persistent record of a farmer's land, fields, crop cycles, observations, uploaded photos, prior investigations, and findings. When a farmer reports a problem, the system connects it to earlier historical measurements, evaluates possible causes using agronomic rules or AI, and presents findings with evidence strength and practical actions.
