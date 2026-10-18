@@ -57,6 +57,7 @@ class Settings(BaseModel):
     CORS_ORIGINS: List[str] = _cors_list
     UPLOADS_DIR: Path = UPLOADS_DIR
     DATA_DIR: Path = DATA_DIR
+    EXTRACTED_CERTS_DIR: Path = EXTRACTED_CERTS_DIR
 
     # FalkorDB settings
     FALKORDB_HOST: str = os.getenv("FALKORDB_HOST", "localhost")
