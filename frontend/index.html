@@ -61,6 +61,10 @@
       <span class="material-symbols-outlined">assignment</span>
       <span id="txt-nav-results">Results</span>
     </a>
+    <a class="nav-tab" data-pane="graph" href="#/graph" id="tab-graph">
+      <span class="material-symbols-outlined">hub</span>
+      <span id="txt-nav-graph">Farm Graph</span>
+    </a>
     <a class="nav-tab" data-pane="about" href="#/about" id="tab-about">
       <span class="material-symbols-outlined">info</span>
       <span id="txt-nav-about">About the Data</span>
@@ -129,6 +133,22 @@
             <input type="text" id="reg-fullname" name="display_name" required autocomplete="name" placeholder="e.g. Ramesh Patel"/>
           </div>
 
+          <div class="form-group" style="margin-bottom: 0.25rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: 600; margin: 0;">Farm Location</label>
+              <button type="button" id="btn-detect-reg-location" class="btn btn-secondary" style="min-height: 32px; padding: 0.2rem 0.6rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.25rem;" onclick="detectRegistrationLocation()">
+                <span class="material-symbols-outlined" style="font-size: 16px;">my_location</span>
+                <span id="txt-reg-detect-loc">Detect My Location</span>
+              </button>
+            </div>
+            <div id="reg-loc-status" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="reg-village">Village / Town</label>
+            <input type="text" id="reg-village" name="village" placeholder="e.g. Bargarh"/>
+          </div>
+
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
             <div class="form-group">
               <label for="reg-district">District / Tehsil</label>
@@ -139,6 +159,8 @@
               <input type="text" id="reg-state" name="state" placeholder="e.g. Odisha"/>
             </div>
           </div>
+          <input type="hidden" id="reg-latitude" name="latitude"/>
+          <input type="hidden" id="reg-longitude" name="longitude"/>
 
           <!-- Optional Step 2: Land -->
           <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 0.5rem;">
@@ -294,6 +316,18 @@
             </select>
           </div>
 
+          <!-- Live Location & Weather Context for this Investigation -->
+          <div class="card" id="ask-context-box" style="background: #f8fafc; border: 1px dashed var(--border); padding: 0.75rem 1rem; margin: 0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+            <div style="display: flex; flex-direction: column; gap: 0.2rem;">
+              <span id="ask-context-loc" style="font-size: 0.85rem; font-weight: 600; color: var(--text-main);">📍 Detecting farm location...</span>
+              <span id="ask-context-weather" style="font-size: 0.8rem; color: var(--text-muted);">⛅ Fetching live weather...</span>
+            </div>
+            <button type="button" class="btn btn-secondary" id="btn-refresh-ask-weather" style="min-height: 30px; padding: 0.15rem 0.5rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.25rem;" onclick="refreshAskContext()">
+              <span class="material-symbols-outlined" style="font-size: 15px;">refresh</span>
+              <span>Update Weather</span>
+            </button>
+          </div>
+
           <!-- Problem Description with Voice Input -->
           <div class="form-group">
             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -406,6 +440,10 @@
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap;">
               <div>
                 <span class="helper-text" id="ws-meta-field-crop">Field • Crop</span>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.35rem; margin-bottom: 0.35rem;">
+                  <span id="ws-tag-location" class="badge" style="background: #e0f2fe; color: #0369a1; font-size: 0.8rem; display: none;"></span>
+                  <span id="ws-tag-weather" class="badge" style="background: #fef3c7; color: #92400e; font-size: 0.8rem; display: none;"></span>
+                </div>
                 <h1 id="ws-summary-title" style="font-size: 1.35rem; font-weight: 700; margin-top: 0.25rem; color: var(--text-main);"></h1>
                 <p id="ws-farmer-problem" style="font-style: italic; color: var(--text-muted); margin-top: 0.5rem;"></p>
               </div>
@@ -531,7 +569,89 @@
 
     </section>
 
-    <!-- SCREEN 5: About the Data (Datasets, Provenance, Redacted Soil Cards, Privacy Consent) -->
+    <!-- SCREEN 5: Farm Knowledge Graph Studio (Dedicated Living Account Graph) -->
+    <section class="view-pane" id="pane-graph">
+      <div class="card" style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+          <div>
+            <h1 style="font-size: 1.35rem; font-weight: 700; margin-bottom: 0.2rem;">Unified Farm Knowledge Graph</h1>
+            <p class="helper-text" id="graph-account-subtitle">Interactive persistent graph connecting your farm, fields, crops, weather, and every investigation.</p>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn btn-secondary" style="min-height: 36px; padding: 0.2rem 0.65rem; font-size: 0.85rem;" onclick="loadUnifiedGraph()">
+              <span class="material-symbols-outlined" style="font-size: 18px;">sync</span>
+              <span>Refresh Graph</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Chips -->
+        <div class="graph-filter-bar" style="margin-top: 1rem;">
+          <span style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-right: 4px;">Filter:</span>
+          <button type="button" class="graph-chip active" data-filter="ALL" onclick="filterGraphNodes('ALL')">All Entities</button>
+          <button type="button" class="graph-chip" data-filter="Field" onclick="filterGraphNodes('Field')">Fields</button>
+          <button type="button" class="graph-chip" data-filter="CropCycle" onclick="filterGraphNodes('CropCycle')">Crops</button>
+          <button type="button" class="graph-chip" data-filter="Investigation" onclick="filterGraphNodes('Investigation')">Investigations</button>
+          <button type="button" class="graph-chip" data-filter="Finding" onclick="filterGraphNodes('Finding')">Findings</button>
+          <button type="button" class="graph-chip" data-filter="Weather" onclick="filterGraphNodes('Weather')">Weather</button>
+          <button type="button" class="graph-chip" data-filter="Location" onclick="filterGraphNodes('Location')">Location</button>
+        </div>
+
+        <!-- Graph Canvas Studio -->
+        <div class="graph-container" id="studio-graph-container" style="height: 520px;">
+          <!-- Floating Controls -->
+          <div class="graph-toolbar">
+            <button type="button" class="graph-tool-btn" title="Zoom In" onclick="zoomGraph(1.2)">
+              <span class="material-symbols-outlined" style="font-size: 18px;">zoom_in</span>
+            </button>
+            <button type="button" class="graph-tool-btn" title="Zoom Out" onclick="zoomGraph(0.8)">
+              <span class="material-symbols-outlined" style="font-size: 18px;">zoom_out</span>
+            </button>
+            <button type="button" class="graph-tool-btn" title="Fit & Center View" onclick="resetGraphView()">
+              <span class="material-symbols-outlined" style="font-size: 18px;">center_focus_strong</span>
+            </button>
+            <button type="button" class="graph-tool-btn" id="btn-toggle-physics" title="Pause / Resume Physics" onclick="toggleGraphPhysics()">
+              <span class="material-symbols-outlined" style="font-size: 18px;" id="icon-toggle-physics">pause</span>
+            </button>
+          </div>
+
+          <canvas id="studio-graph-canvas" class="graph-canvas"></canvas>
+
+          <!-- Interactive Node Inspector Modal / Overlay -->
+          <div id="graph-inspector-panel" class="graph-inspector" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem;">
+              <div>
+                <span id="inspector-badge" class="badge" style="font-size: 0.75rem;">Node</span>
+                <h3 id="inspector-title" style="font-size: 1rem; font-weight: 700; margin-top: 0.2rem;"></h3>
+              </div>
+              <button type="button" class="btn btn-secondary" style="min-height: 24px; padding: 0 4px; font-size: 0.75rem;" onclick="closeGraphInspector()">✕</button>
+            </div>
+            <div id="inspector-properties" style="font-size: 0.8rem; color: var(--text-main); max-height: 140px; overflow-y: auto; line-height: 1.5;"></div>
+            <div id="inspector-relationships" style="margin-top: 0.5rem; border-top: 1px dashed var(--border); padding-top: 0.4rem; font-size: 0.78rem; color: var(--text-muted);"></div>
+          </div>
+        </div>
+
+        <!-- Legend -->
+        <div class="graph-legend">
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #15803d;"></span>Farmer</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #16a34a;"></span>Farm</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #4d7c0f;"></span>Field</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #0d9488;"></span>Crop</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #ea580c;"></span>Investigation</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #7c3aed;"></span>Finding</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #0284c7;"></span>Weather</span>
+          <span class="graph-legend-item"><span class="graph-legend-dot" style="background: #4f46e5;"></span>Location</span>
+        </div>
+
+        <!-- Accessibility Text Breakdown -->
+        <details style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-muted);">
+          <summary style="cursor: pointer; font-weight: 600;">Text List View of Graph (for screen readers)</summary>
+          <div id="studio-graph-text-fallback" style="margin-top: 0.5rem; line-height: 1.6;"></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- SCREEN 6: About the Data (Datasets, Provenance, Redacted Soil Cards, Privacy Consent) -->
     <section class="view-pane" id="pane-about">
       <div class="card">
         <h1 style="font-size: 1.35rem; font-weight: 700; margin-bottom: 0.25rem;">About the Data & Privacy</h1>

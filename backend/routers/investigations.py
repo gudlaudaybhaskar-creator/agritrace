@@ -22,6 +22,8 @@ class StartInvestigationRequest(BaseModel):
     field_id: Optional[str] = None
     crop_cycle_id: Optional[str] = None
     new_measurements: Optional[Dict[str, Any]] = None
+    location_data: Optional[Dict[str, Any]] = None
+    weather_data: Optional[Dict[str, Any]] = None
 
 @router.post("")
 def start_investigation(
@@ -48,7 +50,9 @@ def start_investigation(
         field_id=req.field_id,
         crop_cycle_id=req.crop_cycle_id,
         new_measurements=req.new_measurements,
-        idempotency_key=idempotency_key
+        idempotency_key=idempotency_key,
+        location_data=req.location_data,
+        weather_data=req.weather_data
     )
 
     response_payload = {"status": "success", "investigation": result}

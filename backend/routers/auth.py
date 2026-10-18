@@ -275,6 +275,23 @@ def register_farmer(
                 })
                 graph_manager.create_relationship(created_field_id, "HAS_CROP_CYCLE", created_cycle_id)
 
+    if req.village or req.district or req.state or (req.latitude is not None and req.longitude is not None):
+        loc_parts = [p for p in [req.village, req.district, req.state] if p]
+        loc_tag = "📍 " + (", ".join(loc_parts) if loc_parts else f"GPS ({req.latitude:.4f}, {req.longitude:.4f})")
+        loc_node_id = f"loc_{farmer_id}"
+        graph_manager.create_or_update_node("Location", {
+            "id": loc_node_id,
+            "tag": loc_tag,
+            "village": req.village or "",
+            "district": req.district or "",
+            "state": req.state or "",
+            "country": req.country or "India",
+            "latitude": req.latitude,
+            "longitude": req.longitude,
+            "created_at": now
+        })
+        graph_manager.create_relationship(farmer_id, "LOCATED_IN", loc_node_id)
+
     token = create_access_token(farmer_id, req.username.strip(), token_version=1)
 
     result_payload = {
@@ -389,3 +406,39 @@ def logout_farmer(
 @router.get("/me")
 def get_me(current_farmer: Dict[str, Any] = Depends(get_current_farmer)):
     return {"farmer": current_farmer}
+
+@router.get("/reverse-geocode")
+def reverse_geocode(lat: float, lon: float):
+    """
+    Reverse geocodes latitude/longitude to Village, District, State via OpenStreetMap Nominatim.
+    Free, no API key required.
+    """
+    import urllib.request
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=14"
+        req = urllib.request.Request(url, headers={"User-Agent": "AgriTrace/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            addr = data.get("address", {})
+            village = addr.get("village") or addr.get("suburb") or addr.get("town") or addr.get("city") or ""
+            district = addr.get("county") or addr.get("state_district") or addr.get("district") or addr.get("city") or ""
+            state = addr.get("state") or ""
+            country = addr.get("country") or "India"
+            return {
+                "status": "success",
+                "village": village,
+                "district": district,
+                "state": state,
+                "country": country,
+                "display_name": data.get("display_name", "")
+            }
+    except Exception as e:
+        return {
+            "status": "partial",
+            "village": "",
+            "district": "",
+            "state": "",
+            "country": "India",
+            "error": str(e)
+        }
+

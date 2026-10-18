@@ -158,7 +158,7 @@ class EmbeddedGraphEngine(GraphInterface):
         conn.close()
         return results
 
-    def get_subgraph_for_farmer(self, farmer_id: str, depth: int = 2) -> Dict[str, Any]:
+    def get_subgraph_for_farmer(self, farmer_id: str, depth: int = 5) -> Dict[str, Any]:
         """
         Extracts the ego subgraph strictly belonging to this farmer using BFS.
         Ensures strict tenant isolation between farmers.

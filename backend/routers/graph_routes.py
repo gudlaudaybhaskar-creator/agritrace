@@ -21,12 +21,12 @@ class CypherQueryRequest(BaseModel):
 
 @router.get("/subgraph")
 def get_farmer_subgraph(
-    depth: int = Query(default=2, ge=1, le=4),
+    depth: int = Query(default=5, ge=1, le=6),
     farmer: Dict[str, Any] = Depends(get_current_farmer)
 ):
     """
-    Returns the ego knowledge graph for the authenticated farmer.
-    Capped at depth 1-4 to guarantee performance on mobile devices.
+    Returns the unified ego knowledge graph for the authenticated farmer.
+    Spans Farmer -> Farms -> Fields -> Crops -> Investigations -> Findings / Hypotheses / Weather / Location.
     """
     subgraph = graph_manager.get_subgraph_for_farmer(farmer["id"], depth=depth)
     return {

@@ -22,7 +22,37 @@ const state = {
   graphAnimId: null,
   graphNodes: [],
   graphEdges: [],
-  graphTransform: { x: 0, y: 0, scale: 1 }
+  graphTransform: { x: 0, y: 0, scale: 1 },
+  graphPhysics: true,
+  graphFilter: 'ALL',
+  selectedGraphNode: null,
+  hoveredGraphNode: null,
+  pendingInvestigationContext: null,
+  focusedNodeId: null
+};
+
+const WMO_WEATHER_MAP = {
+  0: "Clear sky",
+  1: "Mainly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Depositing rime fog",
+  51: "Light drizzle",
+  53: "Moderate drizzle",
+  55: "Dense drizzle",
+  61: "Slight rain",
+  63: "Moderate rain",
+  65: "Heavy rain",
+  71: "Slight snow",
+  73: "Moderate snow",
+  75: "Heavy snow",
+  80: "Slight rain showers",
+  81: "Moderate rain showers",
+  82: "Violent rain showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with slight hail",
+  99: "Thunderstorm with heavy hail"
 };
 
 // Safe HTML escape helper
@@ -227,14 +257,15 @@ function navigateByHash(hash) {
   const path = (hash || '#/home').replace('#/', '');
   const [paneName, id] = path.split('/');
 
-  const validPanes = ['home', 'ask', 'my-farm', 'results', 'about'];
+  const validPanes = ['home', 'ask', 'my-farm', 'results', 'graph', 'about'];
   const target = validPanes.includes(paneName) ? paneName : 'home';
 
   showPane(target);
 
   if (target === 'home') loadHomeData();
-  else if (target === 'ask') loadAskFields();
+  else if (target === 'ask') { loadAskFields(); refreshAskContext(); }
   else if (target === 'my-farm') loadMyFarmData();
+  else if (target === 'graph') loadUnifiedGraph();
   else if (target === 'results') {
     if (id) {
       openInvestigationDetail(id);
@@ -258,7 +289,7 @@ function showPane(paneName) {
   if (tab) tab.classList.add('active');
 
   // Pause graph animation loop when canvas is hidden to conserve battery
-  if (paneName !== 'results' && state.graphAnimId) {
+  if (paneName !== 'results' && paneName !== 'graph' && state.graphAnimId) {
     cancelAnimationFrame(state.graphAnimId);
     state.graphAnimId = null;
   }
@@ -378,13 +409,19 @@ function setupEventHandlers() {
       const totalAreaRaw = fd.get('total_area');
       const totalArea = totalAreaRaw ? parseFloat(totalAreaRaw) : null;
 
+      const latVal = fd.get('latitude') ? parseFloat(fd.get('latitude')) : null;
+      const lonVal = fd.get('longitude') ? parseFloat(fd.get('longitude')) : null;
+
       const payload = {
         username: fd.get('username').trim(),
         password: fd.get('password'),
         display_name: fd.get('display_name').trim(),
+        village: fd.get('village')?.trim() || '',
         district: fd.get('district')?.trim() || '',
         state: fd.get('state')?.trim() || '',
-        consent_gps: fd.get('consent_gps') === 'on',
+        latitude: latVal,
+        longitude: lonVal,
+        consent_gps: fd.get('consent_gps') === 'on' || (latVal !== null && lonVal !== null),
         farm_name: fd.get('farm_name')?.trim() || null,
         total_area: totalArea,
         area_unit: fd.get('area_unit') || 'acres',
@@ -445,7 +482,9 @@ function setupEventHandlers() {
         const res = await apiCall('/investigations', 'POST', {
           field_id: fieldId,
           user_query: query,
-          new_measurements: Object.keys(newMeasurements).length > 0 ? newMeasurements : null
+          new_measurements: Object.keys(newMeasurements).length > 0 ? newMeasurements : null,
+          location_data: state.pendingInvestigationContext?.location_data || null,
+          weather_data: state.pendingInvestigationContext?.weather_data || null
         }, { 'Idempotency-Key': idempKey });
 
         const invResult = res.investigation;
@@ -896,6 +935,28 @@ function renderInvestigationWorkspace(inv) {
   
   // Header Meta
   document.getElementById('ws-meta-field-crop').textContent = `${cropName} • Field: ${fieldName}`;
+  
+  // Location and Weather Tag Badges
+  const locBadge = document.getElementById('ws-tag-location');
+  if (locBadge) {
+    if (inv.location_tag) {
+      locBadge.textContent = inv.location_tag;
+      locBadge.style.display = 'inline-block';
+    } else {
+      locBadge.style.display = 'none';
+    }
+  }
+
+  const weatherBadge = document.getElementById('ws-tag-weather');
+  if (weatherBadge) {
+    if (inv.weather_tag) {
+      weatherBadge.textContent = inv.weather_tag;
+      weatherBadge.style.display = 'inline-block';
+    } else {
+      weatherBadge.style.display = 'none';
+    }
+  }
+
   document.getElementById('ws-summary-title').textContent = inv.finding?.diagnosis || inv.summary || 'Investigation Findings';
   document.getElementById('ws-farmer-problem').textContent = `Problem reported: “${inv.user_query || ''}”`;
 
@@ -999,7 +1060,267 @@ function toggleActionCheck(invId, index, isChecked) {
   localStorage.setItem(key, JSON.stringify(saved));
 }
 
-// Toggle Result Graph Canvas View
+// ==========================================
+// 📍 LOCATION & LIVE WEATHER CONTEXT HELPERS
+// ==========================================
+
+window.detectRegistrationLocation = async function() {
+  const statusEl = document.getElementById('reg-loc-status');
+  const btn = document.getElementById('btn-detect-reg-location');
+  if (!navigator.geolocation) {
+    if (statusEl) statusEl.textContent = 'Geolocation not supported by this browser.';
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = 'Detecting GPS coordinates...';
+  if (btn) btn.disabled = true;
+
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const latInput = document.getElementById('reg-latitude');
+      const lonInput = document.getElementById('reg-longitude');
+      if (latInput) latInput.value = lat;
+      if (lonInput) lonInput.value = lon;
+
+      if (statusEl) statusEl.textContent = `GPS: (${lat.toFixed(4)}, ${lon.toFixed(4)}). Finding village / district...`;
+
+      try {
+        const res = await apiCall(`/auth/reverse-geocode?lat=${lat}&lon=${lon}`);
+        if (res.village) {
+          const vInput = document.getElementById('reg-village');
+          if (vInput) vInput.value = res.village;
+        }
+        if (res.district) {
+          const dInput = document.getElementById('reg-district');
+          if (dInput) dInput.value = res.district;
+        }
+        if (res.state) {
+          const sInput = document.getElementById('reg-state');
+          if (sInput) sInput.value = res.state;
+        }
+        if (statusEl) {
+          const parts = [res.village, res.district, res.state].filter(Boolean);
+          statusEl.textContent = `📍 Located: ${parts.join(', ')}`;
+          statusEl.style.color = 'var(--primary)';
+        }
+      } catch (err) {
+        if (statusEl) statusEl.textContent = `GPS coordinates saved (${lat.toFixed(4)}, ${lon.toFixed(4)}).`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    },
+    (err) => {
+      if (statusEl) {
+        statusEl.textContent = 'Location permission denied. You can enter district/state manually.';
+        statusEl.style.color = 'var(--text-muted)';
+      }
+      if (btn) btn.disabled = false;
+    },
+    { timeout: 8000 }
+  );
+};
+
+window.refreshAskContext = async function() {
+  const locEl = document.getElementById('ask-context-loc');
+  const weatherEl = document.getElementById('ask-context-weather');
+  const btn = document.getElementById('btn-refresh-ask-weather');
+  if (btn) btn.disabled = true;
+
+  if (locEl) locEl.textContent = '📍 Detecting farm location...';
+  if (weatherEl) weatherEl.textContent = '⛅ Checking live weather...';
+
+  let lat = state.farmer?.latitude || null;
+  let lon = state.farmer?.longitude || null;
+  let village = state.farmer?.village || '';
+  let district = state.farmer?.district || '';
+  let stateName = state.farmer?.state || '';
+
+  async function applyWeather(targetLat, targetLon, locName) {
+    if (locEl) locEl.textContent = `📍 ${locName || 'Farm Location'}`;
+    let weatherObj = null;
+
+    if (targetLat && targetLon) {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${targetLat}&longitude=${targetLon}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const wdata = await resp.json();
+          const cur = wdata.current || {};
+          const code = cur.weather_code || 0;
+          const cond = WMO_WEATHER_MAP[code] || 'Clear';
+          weatherObj = {
+            temperature: cur.temperature_2m,
+            humidity: cur.relative_humidity_2m,
+            precipitation: cur.precipitation || 0.0,
+            wind_speed: cur.wind_speed_10m || 0.0,
+            condition: cond
+          };
+          if (weatherEl) {
+            weatherEl.textContent = `⛅ ${cur.temperature_2m}°C · ${cur.relative_humidity_2m}% RH · ${cond}` + (cur.precipitation > 0 ? ` · Rain ${cur.precipitation}mm` : '');
+            weatherEl.style.color = '#15803d';
+          }
+        }
+      } catch (err) {
+        console.warn('Weather fetch warning:', err);
+        if (weatherEl) weatherEl.textContent = '⛅ Weather will be retrieved on server';
+      }
+    } else {
+      if (weatherEl) weatherEl.textContent = '⛅ Weather will be retrieved on server';
+    }
+
+    state.pendingInvestigationContext = {
+      location_data: {
+        village,
+        district,
+        state: stateName,
+        latitude: targetLat,
+        longitude: targetLon
+      },
+      weather_data: weatherObj
+    };
+    if (btn) btn.disabled = false;
+  }
+
+  if (lat && lon) {
+    const locParts = [village, district, stateName].filter(Boolean);
+    await applyWeather(lat, lon, locParts.join(', '));
+    return;
+  }
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        lat = pos.coords.latitude;
+        lon = pos.coords.longitude;
+        try {
+          const geoRes = await apiCall(`/auth/reverse-geocode?lat=${lat}&lon=${lon}`);
+          village = geoRes.village || village;
+          district = geoRes.district || district;
+          stateName = geoRes.state || stateName;
+        } catch (e) {}
+        const locParts = [village, district, stateName].filter(Boolean);
+        await applyWeather(lat, lon, locParts.join(', ') || `GPS (${lat.toFixed(2)}, ${lon.toFixed(2)})`);
+      },
+      async () => {
+        const locParts = [village, district, stateName].filter(Boolean);
+        await applyWeather(lat, lon, locParts.join(', ') || 'Farm Location');
+      },
+      { timeout: 6000 }
+    );
+  } else {
+    const locParts = [village, district, stateName].filter(Boolean);
+    await applyWeather(lat, lon, locParts.join(', ') || 'Farm Location');
+  }
+};
+
+// ==========================================
+// 🕸️ UNIFIED ACCOUNT KNOWLEDGE GRAPH ENGINE
+// One Persistent Living Graph per Account
+// ==========================================
+
+const NODE_CONFIG = {
+  Farmer: { color: '#15803d', radius: 24, icon: '👤' },
+  Farm: { color: '#16a34a', radius: 20, icon: '🏡' },
+  Field: { color: '#4d7c0f', radius: 18, icon: '🌱' },
+  CropCycle: { color: '#0d9488', radius: 18, icon: '🌾' },
+  Investigation: { color: '#ea580c', radius: 19, icon: '🔬' },
+  Finding: { color: '#7c3aed', radius: 16, icon: '📋' },
+  Hypothesis: { color: '#db2777', radius: 15, icon: '💡' },
+  Observation: { color: '#0891b2', radius: 15, icon: '📊' },
+  Weather: { color: '#0284c7', radius: 17, icon: '⛅' },
+  Location: { color: '#4f46e5', radius: 17, icon: '📍' }
+};
+
+window.filterGraphNodes = function(filter) {
+  state.graphFilter = filter;
+  document.querySelectorAll('.graph-chip').forEach(c => {
+    if (c.getAttribute('data-filter') === filter) {
+      c.classList.add('active');
+    } else {
+      c.classList.remove('active');
+    }
+  });
+};
+
+window.zoomGraph = function(factor) {
+  state.graphTransform.scale = Math.max(0.3, Math.min(4.0, state.graphTransform.scale * factor));
+};
+
+window.resetGraphView = function() {
+  state.graphTransform = { x: 0, y: 0, scale: 1 };
+  if (state.graphNodes) {
+    state.graphNodes.forEach(n => { n.pinned = false; });
+  }
+};
+
+window.toggleGraphPhysics = function() {
+  state.graphPhysics = !state.graphPhysics;
+  const icon = document.getElementById('icon-toggle-physics');
+  if (icon) {
+    icon.textContent = state.graphPhysics ? 'pause' : 'play_arrow';
+  }
+};
+
+window.closeGraphInspector = function() {
+  state.selectedGraphNode = null;
+  const panel = document.getElementById('graph-inspector-panel');
+  if (panel) panel.style.display = 'none';
+};
+
+window.openGraphInspector = function(node) {
+  state.selectedGraphNode = node;
+  const panel = document.getElementById('graph-inspector-panel');
+  if (!panel) return;
+
+  const badge = document.getElementById('inspector-badge');
+  const title = document.getElementById('inspector-title');
+  const propsEl = document.getElementById('inspector-properties');
+  const relsEl = document.getElementById('inspector-relationships');
+
+  const conf = NODE_CONFIG[node.label] || { color: '#64748b', icon: '●' };
+  if (badge) {
+    badge.textContent = `${conf.icon} ${node.label}`;
+    badge.style.background = conf.color;
+    badge.style.color = '#ffffff';
+  }
+
+  const nodeName = node.properties?.tag || node.properties?.name || node.properties?.crop_name || node.properties?.title || node.properties?.summary || node.id;
+  if (title) title.textContent = nodeName;
+
+  // Format properties
+  const props = node.properties || {};
+  let propLines = [];
+  for (const [k, v] of Object.entries(props)) {
+    if (['id', 'farmer_id', 'field_id', 'farm_id', 'crop_cycle_id', 'investigation_id'].includes(k)) continue;
+    if (v !== null && v !== undefined && v !== '') {
+      propLines.push(`<div><strong>${esc(k)}:</strong> ${esc(String(v))}</div>`);
+    }
+  }
+  if (propsEl) {
+    propsEl.innerHTML = propLines.length > 0 ? propLines.join('') : '<span style="color: var(--text-muted);">No extra attributes</span>';
+  }
+
+  // Format connected edges
+  const connectedEdges = state.graphEdges.filter(e => e.from === node.id || e.to === node.id);
+  let relLines = [];
+  connectedEdges.forEach(e => {
+    const isOut = e.from === node.id;
+    const otherId = isOut ? e.to : e.from;
+    const otherNode = state.graphNodes.find(n => n.id === otherId);
+    const otherLabel = otherNode?.properties?.name || otherNode?.properties?.tag || otherNode?.properties?.crop_name || otherNode?.label || otherId;
+    relLines.push(`<div>${isOut ? '→' : '←'} <em>${esc(e.label)}</em>: <strong>${esc(otherLabel)}</strong></div>`);
+  });
+
+  if (relsEl) {
+    relsEl.innerHTML = relLines.length > 0 ? `<strong>Connected (${relLines.length}):</strong>${relLines.join('')}` : 'No connections';
+  }
+
+  panel.style.display = 'block';
+};
+
+// Toggle graph inside Result pane
 function toggleResultGraphView() {
   const panel = document.getElementById('ws-graph-panel');
   const btn = document.getElementById('btn-toggle-graph-view');
@@ -1008,7 +1329,8 @@ function toggleResultGraphView() {
   if (panel.style.display === 'none') {
     panel.style.display = 'block';
     btn.textContent = 'Hide Graph';
-    loadResultGraph();
+    const invId = state.activeInvestigation?.id || state.activeInvestigation?.investigation_id;
+    loadUnifiedGraph(invId, 'result-graph-canvas');
   } else {
     panel.style.display = 'none';
     btn.textContent = 'Show Graph';
@@ -1019,134 +1341,345 @@ function toggleResultGraphView() {
   }
 }
 
-// Interactive Graph Canvas (Zoom, Pan, Pointer Events, Pauses when hidden)
-async function loadResultGraph() {
-  const canvas = document.getElementById('result-graph-canvas');
+// Master Unified Graph Loader
+window.loadUnifiedGraph = async function(highlightNodeId = null, targetCanvasId = null) {
+  const canvasId = targetCanvasId || (state.activePane === 'results' ? 'result-graph-canvas' : 'studio-graph-canvas');
+  const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
+  const w = rect.width || 700;
+  const h = rect.height || 480;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
 
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
-  const invId = state.activeInvestigation?.id || state.activeInvestigation?.investigation_id;
-  if (!invId) return;
-
   try {
-    const res = await apiCall(`/graph/investigation/${invId}`);
+    // Depth 5 spans the entire account's unified graph!
+    const res = await apiCall('/graph/subgraph?depth=5');
     const sub = res.subgraph || {};
-    const nodes = sub.nodes || [];
-    const edges = sub.edges || [];
+    const rawNodes = sub.nodes || [];
+    const rawEdges = sub.edges || [];
 
-    const width = rect.width;
-    const height = rect.height;
+    // Map existing coordinates so existing nodes don't jump on updates
+    const prevPos = new Map();
+    state.graphNodes.forEach(n => {
+      prevPos.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy, pinned: n.pinned });
+    });
 
-    // Distribute nodes in a circle
-    state.graphNodes = nodes.map((n, i) => {
-      const angle = (i / Math.max(nodes.length, 1)) * 2 * Math.PI;
-      const radius = Math.min(width, height) * 0.35;
+    state.graphNodes = rawNodes.map((n, i) => {
+      if (prevPos.has(n.id)) {
+        const p = prevPos.get(n.id);
+        return { ...n, x: p.x, y: p.y, vx: p.vx || 0, vy: p.vy || 0, pinned: p.pinned || false };
+      }
+      // New nodes: spread organically around center
+      const angle = (i / Math.max(rawNodes.length, 1)) * 2 * Math.PI;
+      const radius = 120 + (i % 3) * 60;
       return {
         ...n,
-        x: width / 2 + Math.cos(angle) * radius,
-        y: height / 2 + Math.sin(angle) * radius,
+        x: w / 2 + Math.cos(angle) * radius,
+        y: h / 2 + Math.sin(angle) * radius,
         vx: 0,
-        vy: 0
+        vy: 0,
+        pinned: false
       };
     });
-    state.graphEdges = edges;
 
-    setupGraphInteractions(canvas);
-    startGraphSimulation(ctx, rect.width, rect.height);
+    state.graphEdges = rawEdges;
+    state.focusedNodeId = highlightNodeId;
+
+    // Center on focused node if provided
+    if (highlightNodeId) {
+      const focus = state.graphNodes.find(n => n.id === highlightNodeId);
+      if (focus) {
+        state.graphTransform.x = (w / 2) - focus.x;
+        state.graphTransform.y = (h / 2) - focus.y;
+      }
+    }
+
+    // Update text fallbacks for screen-readers
+    const textHtml = `
+      <ul style="padding-left: 1.2rem;">
+        ${state.graphNodes.map(n => {
+          const conf = NODE_CONFIG[n.label] || { icon: '●' };
+          const name = n.properties?.name || n.properties?.tag || n.properties?.crop_name || n.properties?.title || n.id;
+          return `<li><strong>${conf.icon} ${esc(n.label)}:</strong> ${esc(name)}</li>`;
+        }).join('')}
+      </ul>
+    `;
+    const studioFallback = document.getElementById('studio-graph-text-fallback');
+    if (studioFallback) studioFallback.innerHTML = textHtml;
+    const wsFallback = document.getElementById('ws-graph-text-fallback');
+    if (wsFallback) wsFallback.innerHTML = textHtml;
+
+    setupUnifiedGraphInteractions(canvas);
+    startUnifiedGraphSimulation(ctx, canvas, w, h);
   } catch (err) {
-    console.warn('Graph load warning:', err);
+    console.warn('Unified graph load error:', err);
   }
-}
+};
 
-function setupGraphInteractions(canvas) {
-  let isDragging = false;
+function setupUnifiedGraphInteractions(canvas) {
+  let isPanning = false;
   let startX = 0;
   let startY = 0;
+  let dragged = null;
+
+  function getTransformedPoint(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+    const clientY = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+    const mouseX = clientX - rect.left;
+    const mouseY = clientY - rect.top;
+    const gx = (mouseX - state.graphTransform.x) / state.graphTransform.scale;
+    const gy = (mouseY - state.graphTransform.y) / state.graphTransform.scale;
+    return { gx, gy, clientX, clientY };
+  }
+
+  function findNodeUnder(gx, gy) {
+    for (let i = state.graphNodes.length - 1; i >= 0; i--) {
+      const n = state.graphNodes[i];
+      if (state.graphFilter !== 'ALL' && n.label !== state.graphFilter) continue;
+      const conf = NODE_CONFIG[n.label] || { radius: 16 };
+      const dx = gx - n.x;
+      const dy = gy - n.y;
+      if (Math.sqrt(dx * dx + dy * dy) <= conf.radius + 4) {
+        return n;
+      }
+    }
+    return null;
+  }
 
   canvas.onpointerdown = (e) => {
-    isDragging = true;
-    startX = e.clientX - state.graphTransform.x;
-    startY = e.clientY - state.graphTransform.y;
-    canvas.setPointerCapture(e.pointerId);
+    const { gx, gy, clientX, clientY } = getTransformedPoint(e);
+    const targetNode = findNodeUnder(gx, gy);
+
+    if (targetNode) {
+      dragged = targetNode;
+      dragged.pinned = true;
+      dragged.x = gx;
+      dragged.y = gy;
+      canvas.setPointerCapture(e.pointerId);
+    } else {
+      isPanning = true;
+      startX = clientX - state.graphTransform.x;
+      startY = clientY - state.graphTransform.y;
+      canvas.setPointerCapture(e.pointerId);
+    }
   };
 
   canvas.onpointermove = (e) => {
-    if (!isDragging) return;
-    state.graphTransform.x = e.clientX - startX;
-    state.graphTransform.y = e.clientY - startY;
+    const { gx, gy, clientX, clientY } = getTransformedPoint(e);
+
+    if (dragged) {
+      dragged.x = gx;
+      dragged.y = gy;
+      dragged.vx = 0;
+      dragged.vy = 0;
+      return;
+    }
+
+    if (isPanning) {
+      state.graphTransform.x = clientX - startX;
+      state.graphTransform.y = clientY - startY;
+      return;
+    }
+
+    // Hover styling
+    const hoverNode = findNodeUnder(gx, gy);
+    state.hoveredGraphNode = hoverNode;
+    canvas.style.cursor = hoverNode ? 'pointer' : 'grab';
   };
 
   canvas.onpointerup = (e) => {
-    isDragging = false;
+    const { gx, gy } = getTransformedPoint(e);
+
+    if (dragged) {
+      // If was just a click (dragged very little), open inspector!
+      openGraphInspector(dragged);
+      dragged = null;
+    } else if (isPanning) {
+      isPanning = false;
+    }
     canvas.releasePointerCapture(e.pointerId);
   };
 
   canvas.onwheel = (e) => {
     e.preventDefault();
     const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-    state.graphTransform.scale = Math.max(0.4, Math.min(3.0, state.graphTransform.scale * zoomFactor));
+    state.graphTransform.scale = Math.max(0.3, Math.min(4.0, state.graphTransform.scale * zoomFactor));
   };
 }
 
-function startGraphSimulation(ctx, w, h) {
+function startUnifiedGraphSimulation(ctx, canvas, w, h) {
   if (state.graphAnimId) cancelAnimationFrame(state.graphAnimId);
 
+  let pulseAngle = 0;
+
+  function stepPhysics() {
+    if (!state.graphPhysics) return;
+    const nodes = state.graphNodes;
+    const edges = state.graphEdges;
+    const k = 80;
+    const repulsion = 5000;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Node Repulsion
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const n1 = nodes[i];
+        const n2 = nodes[j];
+        const dx = n2.x - n1.x;
+        const dy = n2.y - n1.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        if (dist < 420) {
+          const force = repulsion / (dist * dist);
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+          if (!n1.pinned) { n1.vx -= fx; n1.vy -= fy; }
+          if (!n2.pinned) { n2.vx += fx; n2.vy += fy; }
+        }
+      }
+    }
+
+    // Spring Attraction along Edges
+    for (let i = 0; i < edges.length; i++) {
+      const e = edges[i];
+      const fromNode = nodes.find(n => n.id === e.from);
+      const toNode = nodes.find(n => n.id === e.to);
+      if (fromNode && toNode) {
+        const dx = toNode.x - fromNode.x;
+        const dy = toNode.y - fromNode.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const force = (dist - k) * 0.035;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        if (!fromNode.pinned) { fromNode.vx += fx; fromNode.vy += fy; }
+        if (!toNode.pinned) { toNode.vx -= fx; toNode.vy -= fy; }
+      }
+    }
+
+    // Gravity to center & Damping
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (n.pinned) continue;
+      n.vx += (cx - n.x) * 0.012;
+      n.vy += (cy - n.y) * 0.012;
+      n.vx *= 0.83;
+      n.vy *= 0.83;
+      n.x += n.vx;
+      n.y += n.vy;
+    }
+  }
+
   function draw() {
+    pulseAngle += 0.05;
+    stepPhysics();
+
     ctx.clearRect(0, 0, w, h);
     ctx.save();
     ctx.translate(state.graphTransform.x, state.graphTransform.y);
     ctx.scale(state.graphTransform.scale, state.graphTransform.scale);
 
-    // Draw Edges
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 1.5;
+    // 1. Draw Edges
     state.graphEdges.forEach(e => {
       const fromNode = state.graphNodes.find(n => n.id === e.from);
       const toNode = state.graphNodes.find(n => n.id === e.to);
       if (fromNode && toNode) {
+        const isFocusedEdge = (fromNode.id === state.focusedNodeId || toNode.id === state.focusedNodeId);
         ctx.beginPath();
         ctx.moveTo(fromNode.x, fromNode.y);
         ctx.lineTo(toNode.x, toNode.y);
+        ctx.strokeStyle = isFocusedEdge ? '#ea580c' : '#cbd5e1';
+        ctx.lineWidth = isFocusedEdge ? 2.5 : 1.4;
         ctx.stroke();
 
-        // Edge label
+        // Edge relationship label
         if (e.label) {
-          ctx.fillStyle = '#64748b';
-          ctx.font = '11px sans-serif';
-          ctx.fillText(e.label, (fromNode.x + toNode.x) / 2, (fromNode.y + toNode.y) / 2);
+          const midX = (fromNode.x + toNode.x) / 2;
+          const midY = (fromNode.y + toNode.y) / 2;
+          ctx.fillStyle = isFocusedEdge ? '#c2410c' : '#64748b';
+          ctx.font = '500 10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(e.label, midX, midY - 3);
         }
       }
     });
 
-    // Draw Nodes
+    // 2. Draw Nodes
     state.graphNodes.forEach(n => {
+      const isFiltered = state.graphFilter !== 'ALL' && n.label !== state.graphFilter;
+      const conf = NODE_CONFIG[n.label] || { color: '#64748b', radius: 16, icon: '●' };
+      const radius = conf.radius;
+      const isSelected = state.selectedGraphNode?.id === n.id;
+      const isHovered = state.hoveredGraphNode?.id === n.id;
+      const isFocused = state.focusedNodeId === n.id;
+
+      ctx.save();
+      if (isFiltered) {
+        ctx.globalAlpha = 0.25;
+      }
+
+      // Golden Pulse Ring on Focused Node
+      if (isFocused) {
+        ctx.beginPath();
+        const pulseR = radius + 6 + Math.sin(pulseAngle) * 4;
+        ctx.arc(n.x, n.y, pulseR, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'rgba(234, 88, 12, 0.45)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+
+      // Selection Glow
+      if (isSelected || isHovered) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#0284c7';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+
+      // Base Node Circle
       ctx.beginPath();
-      ctx.arc(n.x, n.y, 16, 0, 2 * Math.PI);
-      ctx.fillStyle = '#15803d';
+      ctx.arc(n.x, n.y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = conf.color;
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.stroke();
 
-      ctx.fillStyle = '#0f172a';
-      ctx.font = 'bold 12px sans-serif';
+      // Node Icon inside
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `${Math.round(radius * 0.9)}px sans-serif`;
       ctx.textAlign = 'center';
-      const label = n.properties?.name || n.properties?.crop_name || n.properties?.title || n.label || 'Node';
-      ctx.fillText(label.substring(0, 14), n.x, n.y + 30);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(conf.icon, n.x, n.y);
+
+      // Node Label Text below
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '600 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const labelText = n.properties?.name || n.properties?.tag || n.properties?.crop_name || n.properties?.title || n.label;
+      const cleanLabel = String(labelText).replace(/^📍\s*/, '').replace(/^⛅\s*/, '');
+      ctx.fillText(cleanLabel.substring(0, 15), n.x, n.y + radius + 4);
+
+      ctx.restore();
     });
 
     ctx.restore();
 
-    // Check if container is still visible before requesting next frame
-    const panel = document.getElementById('ws-graph-panel');
-    if (panel && panel.style.display !== 'none') {
+    // Check if either canvas is still in an active view before scheduling next frame
+    const paneGraph = document.getElementById('pane-graph');
+    const wsPanel = document.getElementById('ws-graph-panel');
+    const isGraphVisible = (paneGraph && paneGraph.classList.contains('active')) ||
+                           (wsPanel && wsPanel.style.display !== 'none');
+
+    if (isGraphVisible) {
       state.graphAnimId = requestAnimationFrame(draw);
     }
   }

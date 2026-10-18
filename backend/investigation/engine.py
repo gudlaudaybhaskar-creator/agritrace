@@ -25,6 +25,55 @@ from backend.investigation.ai_provider import ai_provider
 
 logger = logging.getLogger("agritrace.engine")
 
+WMO_WEATHER_CODE_MAP = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    71: "Slight snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail"
+}
+
+def fetch_live_weather(lat: Optional[float], lon: Optional[float]) -> Optional[Dict[str, Any]]:
+    if lat is None or lon is None:
+        return None
+    try:
+        import urllib.request
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m"
+        req = urllib.request.Request(url, headers={"User-Agent": "AgriTrace/1.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            cur = data.get("current", {})
+            code = cur.get("weather_code", 0)
+            cond = WMO_WEATHER_CODE_MAP.get(code, "Clear")
+            return {
+                "temperature": cur.get("temperature_2m"),
+                "humidity": cur.get("relative_humidity_2m"),
+                "precipitation": cur.get("precipitation", 0.0),
+                "wind_speed": cur.get("wind_speed_10m", 0.0),
+                "weather_code": code,
+                "condition": cond,
+                "time": cur.get("time")
+            }
+    except Exception as e:
+        logger.warning(f"Could not fetch live weather from Open-Meteo: {e}")
+        return None
+
 class InvestigationEngine:
     def execute_investigation(
         self,
@@ -34,7 +83,9 @@ class InvestigationEngine:
         crop_cycle_id: Optional[str] = None,
         new_measurements: Optional[Dict[str, Any]] = None,
         evidence_files: Optional[List[Dict[str, Any]]] = None,
-        idempotency_key: Optional[str] = None
+        idempotency_key: Optional[str] = None,
+        location_data: Optional[Dict[str, Any]] = None,
+        weather_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         start_time = time.time()
         trace_steps = []
@@ -239,12 +290,45 @@ class InvestigationEngine:
             uncertainties = json.dumps(finding_data.get("uncertainties", []))
             evidence_str = finding_data.get("evidence_strength", "Moderate")
 
+            # Resolve Location Tag
+            resolved_loc = dict(location_data or {})
+            village = resolved_loc.get("village") or farmer_profile.get("village") or ""
+            district = resolved_loc.get("district") or farmer_profile.get("district") or ""
+            state = resolved_loc.get("state") or farmer_profile.get("state") or ""
+            lat = resolved_loc.get("latitude") if resolved_loc.get("latitude") is not None else farmer_profile.get("latitude")
+            lon = resolved_loc.get("longitude") if resolved_loc.get("longitude") is not None else farmer_profile.get("longitude")
+
+            loc_parts = [p for p in [village, district, state] if p]
+            if loc_parts:
+                location_tag = "📍 " + ", ".join(loc_parts)
+            elif lat is not None and lon is not None:
+                location_tag = f"📍 GPS ({lat:.4f}, {lon:.4f})"
+            else:
+                location_tag = "📍 Farm Location"
+
+            # Resolve Weather Tag
+            resolved_weather = None
+            if weather_data and weather_data.get("temperature") is not None:
+                resolved_weather = dict(weather_data)
+            elif lat is not None and lon is not None:
+                resolved_weather = fetch_live_weather(lat, lon)
+
+            weather_tag = None
+            if resolved_weather and resolved_weather.get("temperature") is not None:
+                temp = resolved_weather.get("temperature")
+                rh = resolved_weather.get("humidity")
+                cond = resolved_weather.get("condition", "Normal")
+                precip = resolved_weather.get("precipitation", 0.0)
+                weather_tag = f"⛅ {temp}°C · {rh}% RH · {cond}"
+                if precip and float(precip) > 0:
+                    weather_tag += f" · Rain {precip}mm"
+
             cursor.execute(
                 """
-                INSERT INTO investigations (id, farmer_id, crop_cycle_id, field_id, farm_id, title, user_query, status, execution_trace, idempotency_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investigations (id, farmer_id, crop_cycle_id, field_id, farm_id, title, user_query, status, execution_trace, idempotency_key, location_tag, weather_tag, weather_data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (inv_id, farmer_id, resolved_cycle_id, resolved_field_id, farm_info.get("id"), f"Problem: {user_query[:40]}", user_query, "resolved", json.dumps(trace_steps), idempotency_key, now_iso, now_iso)
+                (inv_id, farmer_id, resolved_cycle_id, resolved_field_id, farm_info.get("id"), f"Problem: {user_query[:40]}", user_query, "resolved", json.dumps(trace_steps), idempotency_key, location_tag, weather_tag, json.dumps(resolved_weather) if resolved_weather else None, now_iso, now_iso)
             )
 
             cursor.execute(
@@ -273,7 +357,7 @@ class InvestigationEngine:
             # Commit the atomic transaction
             conn.commit()
 
-            # Step 8: Update Graph Nodes
+            # Step 8: Update Graph Nodes in Farmer's Unified Graph
             graph_manager.create_or_update_node("Investigation", {
                 "id": inv_id,
                 "farmer_id": farmer_id,
@@ -281,9 +365,41 @@ class InvestigationEngine:
                 "crop_cycle_id": resolved_cycle_id,
                 "title": f"Investigation: {crop_name}",
                 "status": "resolved",
+                "location_tag": location_tag,
+                "weather_tag": weather_tag,
                 "created_at": now_iso
             })
             graph_manager.create_relationship(resolved_cycle_id, "HAS_INVESTIGATION", inv_id)
+            graph_manager.create_relationship(resolved_field_id, "HAS_INVESTIGATION", inv_id)
+            graph_manager.create_relationship(farmer_id, "CONDUCTED", inv_id)
+
+            # Location Node
+            loc_node_id = f"loc_{inv_id}"
+            graph_manager.create_or_update_node("Location", {
+                "id": loc_node_id,
+                "tag": location_tag,
+                "village": village,
+                "district": district,
+                "state": state,
+                "latitude": lat,
+                "longitude": lon,
+                "created_at": now_iso
+            })
+            graph_manager.create_relationship(inv_id, "OCCURRED_AT", loc_node_id)
+
+            # Weather Node (if real weather was retrieved)
+            if weather_tag and resolved_weather:
+                w_node_id = f"weather_{inv_id}"
+                graph_manager.create_or_update_node("Weather", {
+                    "id": w_node_id,
+                    "tag": weather_tag,
+                    "temperature": resolved_weather.get("temperature"),
+                    "humidity": resolved_weather.get("humidity"),
+                    "condition": resolved_weather.get("condition"),
+                    "precipitation": resolved_weather.get("precipitation"),
+                    "created_at": now_iso
+                })
+                graph_manager.create_relationship(inv_id, "RECORDED_IN_WEATHER", w_node_id)
 
             graph_manager.create_or_update_node("Finding", {
                 "id": finding_id,
@@ -333,7 +449,10 @@ class InvestigationEngine:
                 "execution_trace": trace_steps,
                 "provider_mode": analysis_result.get("provider_mode"),
                 "status": "resolved",
-                "disclaimer": analysis_result.get("disclaimer")
+                "disclaimer": analysis_result.get("disclaimer"),
+                "location_tag": location_tag,
+                "weather_tag": weather_tag,
+                "weather_data": resolved_weather
             }
 
         finally:

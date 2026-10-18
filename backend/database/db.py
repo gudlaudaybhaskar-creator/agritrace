@@ -241,6 +241,9 @@ def init_db():
 
     add_col_if_missing("investigations", "idempotency_key TEXT", "idempotency_key")
     add_col_if_missing("investigations", "synced_at TEXT", "synced_at")
+    add_col_if_missing("investigations", "location_tag TEXT", "location_tag")
+    add_col_if_missing("investigations", "weather_tag TEXT", "weather_tag")
+    add_col_if_missing("investigations", "weather_data TEXT", "weather_data")
 
     add_col_if_missing("hypotheses", "evidence_strength TEXT DEFAULT 'Moderate'", "evidence_strength")
     add_col_if_missing("hypotheses", "synced_at TEXT", "synced_at")
