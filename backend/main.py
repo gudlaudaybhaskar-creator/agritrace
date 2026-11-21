@@ -7,7 +7,7 @@ import os
 import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -117,14 +117,7 @@ def google_verification():
     vfile = FRONTEND_DIR / "googlee3761f5885c801ac.html"
     if vfile.exists():
         return FileResponse(str(vfile), media_type="text/html")
-    return PlainTextResponse("google-site-verification: googlee3761f5885c801ac.html")
-
-@app.get("/google{code}.html", include_in_schema=False)
-def google_verification_dynamic(code: str):
-    vfile = FRONTEND_DIR / f"google{code}.html"
-    if vfile.exists():
-        return FileResponse(str(vfile), media_type="text/html")
-    return PlainTextResponse(f"google-site-verification: google{code}.html")
+    raise HTTPException(status_code=404, detail="Verification file not found")
 
 @app.get("/robots.txt", include_in_schema=False)
 def serve_robots_txt(request: Request):

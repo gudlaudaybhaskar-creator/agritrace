@@ -534,6 +534,10 @@ def test_12_google_verification_and_keep_alive(client):
     assert resp.status_code == 200
     assert "google-site-verification: googlee3761f5885c801ac.html" in resp.text
 
+    # Negative probe check: unknown verification files must return 404
+    resp_fake = client.get("/googleRandomProbe999.html")
+    assert resp_fake.status_code == 404
+
     # 2. robots.txt endpoint
     resp_robots = client.get("/robots.txt")
     assert resp_robots.status_code == 200
