@@ -552,9 +552,14 @@ def test_12_google_verification_and_keep_alive(client):
     assert "status" in status_data
     assert "total_pings" in status_data
 
-    # 5. Frontend index.html verification tag
+    # 5. Frontend index.html verification tag and search console keywords
     resp_index = client.get("/")
     assert resp_index.status_code == 200
     assert 'name="google-site-verification"' in resp_index.text
     assert "googlee3761f5885c801ac" in resp_index.text
+    # Verify search keywords and creator attribution
+    assert "Gudla Uday Bhaskar" in resp_index.text
+    assert "AGRI TRACE" in resp_index.text
+    assert "kissan sahayak" in resp_index.text
+    assert "agrideveloper" in resp_index.text
 
