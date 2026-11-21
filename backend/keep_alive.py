@@ -36,7 +36,7 @@ def resolve_target_url() -> str:
         or os.getenv("SITE_URL")
         or os.getenv("PING_URL")
         or getattr(settings, "RENDER_EXTERNAL_URL", "")
-        or "https://agritrace.onrender.com"
+        or "https://agri-trace-4x5p.onrender.com"
     ).strip()
     return url.rstrip("/")
 

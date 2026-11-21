@@ -6,13 +6,13 @@ Render spins down after 15 minutes of inactivity; this script pings every 10 min
 
 Usage:
     # Continuous ping robot (default 600 seconds = 10 minutes)
-    python scripts/render_keep_alive.py --url https://agritrace.onrender.com
+    python scripts/render_keep_alive.py --url https://agri-trace-4x5p.onrender.com
 
     # One-time ping check
-    python scripts/render_keep_alive.py --url https://agritrace.onrender.com --once
+    python scripts/render_keep_alive.py --url https://agri-trace-4x5p.onrender.com --once
 
     # Custom interval (e.g. 5 minutes)
-    python scripts/render_keep_alive.py --url https://agritrace.onrender.com --interval 300
+    python scripts/render_keep_alive.py --url https://agri-trace-4x5p.onrender.com --interval 300
 """
 
 import argparse
@@ -43,7 +43,7 @@ def ping(url: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Render Keep-Alive Robot for AgriTrace")
-    parser.add_argument("--url", default="https://agritrace.onrender.com", help="Render service base URL")
+    parser.add_argument("--url", default="https://agri-trace-4x5p.onrender.com", help="Render service base URL")
     parser.add_argument("--interval", type=int, default=600, help="Ping interval in seconds (default: 600 / 10 minutes)")
     parser.add_argument("--once", action="store_true", help="Perform a single ping and exit")
     args = parser.parse_args()
