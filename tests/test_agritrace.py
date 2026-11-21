@@ -523,3 +523,38 @@ def test_11_zero_banned_strings_and_fake_numbers():
                 pass
 
     assert len(violations) == 0, f"Found banned string violations:\n" + "\n".join(violations)
+
+
+# ==============================================================================
+# TEST 12: Google Search Console verification & Keep-Alive robot endpoints
+# ==============================================================================
+def test_12_google_verification_and_keep_alive(client):
+    # 1. Google Search Console HTML verification file endpoint
+    resp = client.get("/googlee3761f5885c801ac.html")
+    assert resp.status_code == 200
+    assert "google-site-verification: googlee3761f5885c801ac.html" in resp.text
+
+    # 2. robots.txt endpoint
+    resp_robots = client.get("/robots.txt")
+    assert resp_robots.status_code == 200
+    assert "Allow: /" in resp_robots.text
+    assert "sitemap.xml" in resp_robots.text
+
+    # 3. sitemap.xml endpoint
+    resp_sitemap = client.get("/sitemap.xml")
+    assert resp_sitemap.status_code == 200
+    assert "<urlset" in resp_sitemap.text
+
+    # 4. Keep-Alive status endpoint
+    resp_status = client.get("/api/keep-alive/status")
+    assert resp_status.status_code == 200
+    status_data = resp_status.json()
+    assert "status" in status_data
+    assert "total_pings" in status_data
+
+    # 5. Frontend index.html verification tag
+    resp_index = client.get("/")
+    assert resp_index.status_code == 200
+    assert 'name="google-site-verification"' in resp_index.text
+    assert "googlee3761f5885c801ac" in resp_index.text
+

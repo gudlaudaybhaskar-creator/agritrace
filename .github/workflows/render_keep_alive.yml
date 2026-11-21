@@ -1,0 +1,30 @@
+name: Render Keep-Alive Robot
+
+on:
+  schedule:
+    # Run every 10 minutes (cron in UTC)
+    # Render free tier spins down after 15 minutes of inactivity.
+    # Pinging every 10 minutes guarantees the service stays awake 24/7 without showing spin-up delays.
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  keep-alive-ping:
+    name: Ping AgriTrace Service
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping AgriTrace on Render
+        run: |
+          TARGET_URL="${{ secrets.RENDER_SITE_URL }}"
+          if [ -z "$TARGET_URL" ]; then
+            TARGET_URL="https://agritrace.onrender.com"
+          fi
+          echo "Pinging ${TARGET_URL}/api/health at $(date -u)..."
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 45 "${TARGET_URL}/api/health" || echo "failed")
+          echo "Health endpoint response status: ${STATUS_CODE}"
+          if [ "$STATUS_CODE" != "200" ]; then
+            echo "Health endpoint returned $STATUS_CODE. Pinging root URL as fallback..."
+            curl -s -o /dev/null -w "%{http_code}" --max-time 45 "${TARGET_URL}/" || true
+          fi
+          echo "Keep-alive ping completed successfully."
+

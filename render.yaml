@@ -23,3 +23,7 @@ services:
         sync: false
       - key: FALKORDB_PASSWORD
         sync: false
+      - key: ENABLE_KEEP_ALIVE
+        value: "true"
+      - key: KEEP_ALIVE_INTERVAL_SECONDS
+        value: "600"

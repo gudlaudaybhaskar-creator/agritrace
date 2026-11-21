@@ -4,13 +4,14 @@ Graph-Native Agricultural Investigation & Persistent Farm-Memory Platform
 """
 
 import os
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.exceptions import RequestValidationError
 
 from backend.config import settings
@@ -36,8 +37,22 @@ async def lifespan(app: FastAPI):
         dataset_manager.initialize_and_profile()
     except Exception as e:
         print(f"Dataset profiling warning: {e}")
+
+    # Start Keep-Alive Background Robot if enabled
+    keep_alive_task = None
+    if settings.ENABLE_KEEP_ALIVE and "PYTEST_CURRENT_TEST" not in os.environ:
+        from backend.keep_alive import keep_alive_worker
+        keep_alive_task = asyncio.create_task(keep_alive_worker())
+
     yield
+
     # Shutdown
+    if keep_alive_task:
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -95,6 +110,59 @@ app.include_router(meta_routes.router, prefix=settings.API_V1_STR)
 @app.get("/api/health")
 def api_health():
     return {"status": "ok", "app": settings.PROJECT_NAME, "version": settings.VERSION}
+
+# Google Search Console Verification & Crawling Endpoints
+@app.get("/googlee3761f5885c801ac.html", include_in_schema=False)
+def google_verification():
+    vfile = FRONTEND_DIR / "googlee3761f5885c801ac.html"
+    if vfile.exists():
+        return FileResponse(str(vfile), media_type="text/html")
+    return PlainTextResponse("google-site-verification: googlee3761f5885c801ac.html")
+
+@app.get("/google{code}.html", include_in_schema=False)
+def google_verification_dynamic(code: str):
+    vfile = FRONTEND_DIR / f"google{code}.html"
+    if vfile.exists():
+        return FileResponse(str(vfile), media_type="text/html")
+    return PlainTextResponse(f"google-site-verification: google{code}.html")
+
+@app.get("/robots.txt", include_in_schema=False)
+def serve_robots_txt(request: Request):
+    rfile = FRONTEND_DIR / "robots.txt"
+    if rfile.exists():
+        return FileResponse(str(rfile), media_type="text/plain")
+    base_url = str(request.base_url).rstrip("/")
+    return PlainTextResponse(f"User-agent: *\nAllow: /\nSitemap: {base_url}/sitemap.xml\n")
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def serve_sitemap_xml(request: Request):
+    sfile = FRONTEND_DIR / "sitemap.xml"
+    if sfile.exists():
+        return FileResponse(str(sfile), media_type="application/xml")
+    base_url = str(request.base_url).rstrip("/")
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>{base_url}/</loc>
+    <lastmod>2026-11-21</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>"""
+    return Response(content=xml_content, media_type="application/xml")
+
+# Diagnostics & Monitoring for Keep-Alive Robot
+@app.get("/api/keep-alive/status", tags=["Diagnostics"])
+def keep_alive_status():
+    from backend.keep_alive import keep_alive_stats
+    return keep_alive_stats
+
+@app.post("/api/keep-alive/ping", tags=["Diagnostics"])
+async def trigger_keep_alive_ping():
+    from backend.keep_alive import ping_service, resolve_target_url
+    target_url = resolve_target_url()
+    success = await ping_service(target_url)
+    return {"success": success, "target_url": target_url}
 
 
 # Serve Frontend Static Assets

@@ -79,6 +79,11 @@ class Settings(BaseModel):
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     AI_PROVIDER: str = os.getenv("AI_PROVIDER", "auto")  # gemini or fallback
 
+    # Render & Keep-Alive settings
+    RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", os.getenv("APP_URL", "https://agritrace.onrender.com"))
+    ENABLE_KEEP_ALIVE: bool = os.getenv("ENABLE_KEEP_ALIVE", "true").lower() in ("true", "1", "yes")
+    KEEP_ALIVE_INTERVAL_SECONDS: int = int(os.getenv("KEEP_ALIVE_INTERVAL_SECONDS", "600"))
+
     # Dataset file paths
     DATASET_CROP_REC: str = str(BASE_DIR / "Crop_recommendationV2.csv")
     DATASET_DATA_CORE: str = str(BASE_DIR / "data_core.csv")
